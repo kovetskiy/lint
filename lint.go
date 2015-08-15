@@ -187,6 +187,7 @@ func (f *file) lint() {
 	f.lintErrorReturn()
 	f.lintUnexportedReturn()
 	f.lintTimeNames()
+	f.lintFormats()
 }
 
 type link string
@@ -1392,6 +1393,68 @@ func (f *file) lintTimeNames() {
 			}
 			f.errorf(v, 0.9, category("time"), "var %s is of type %v; don't use unit-specific suffix %q", name.Name, origTyp, suffix)
 		}
+		return true
+	})
+}
+
+// support verbs mentioned on https://golang.org/pkg/fmt/
+var formatVerbRE = regexp.MustCompile(`%([# +_0-9\.]+)?[vTtbcdoqxXUbeEfFgGsp]`)
+var formatPkg = []string{
+	"log", "fmt",
+}
+
+// lintFormats examines log/fmt print statements.
+func (f *file) lintFormats() {
+	f.walk(func(node ast.Node) bool {
+		ce, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+
+		sel, ok := ce.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+
+		found := false
+		for _, pkg := range formatPkg {
+			if isIdent(sel.X, pkg) {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return true
+		}
+
+		if len(ce.Args) < 1 {
+			return true
+		}
+
+		format, ok := ce.Args[0].(*ast.BasicLit)
+		if !ok || format.Kind != token.STRING {
+			return true
+		}
+
+		verbsCount := len(formatVerbRE.FindAllStringSubmatch(fmt.Sprint(format), -1))
+
+		funcName := sel.Sel.Name
+
+		// i.e. Printf, Panicf, Fatalf, Errorf, Sprintf
+		if funcName[len(funcName)-1:] != "f" && verbsCount != 0 {
+			f.errorf(sel.Sel, 1, "function does not support formatting verbs")
+			return false
+		}
+
+		argsCount := len(ce.Args) - 1
+		switch {
+		case verbsCount > argsCount:
+			f.errorf(format, 1.0, "amount of verbs in format string more than amount of passed arguments")
+		case verbsCount < argsCount:
+			f.errorf(format, 1.0, "amount of verbs in format string less than amount of passed arguments")
+		}
+
 		return true
 	})
 }
